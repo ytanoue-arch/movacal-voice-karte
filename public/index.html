@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <title>音声カルテ</title>
+  <meta name="theme-color" content="#143642" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="音声カルテ" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="icon" href="icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">音声カルテ</span>
+      <span class="brand-tag">MOVACAL</span>
+    </div>
+    <div class="who" id="who"></div>
+  </header>
+
+  <main class="wrap">
+
+    <!-- 認証 -->
+    <section id="authCard" class="card auth-card" hidden>
+      <h2 class="card-title">サインイン</h2>
+      <div id="gsiButton"></div>
+      <div id="tokenAuth" hidden>
+        <label class="field">
+          <span>アクセストークン</span>
+          <input type="password" id="appToken" placeholder="APP_TOKEN" autocapitalize="off" autocorrect="off" />
+        </label>
+        <button id="tokenSignin" class="btn btn-primary">サインイン</button>
+      </div>
+      <p class="auth-note" id="authNote"></p>
+    </section>
+
+    <!-- アプリ本体 -->
+    <div id="appBody" hidden>
+
+      <section class="card">
+        <h2 class="card-title">患者</h2>
+        <label class="field" id="clinicField" hidden>
+          <span>診療所</span>
+          <select id="clinic"></select>
+        </label>
+        <div class="field-row">
+          <label class="field grow">
+            <span>ORCA ID</span>
+            <input type="text" id="orcaId" placeholder="例: 01366" inputmode="numeric" autocapitalize="off" autocorrect="off" />
+          </label>
+        </div>
+        <p id="idHint" class="id-hint"></p>
+      </section>
+
+      <section class="card recorder">
+        <div class="rec-stage">
+          <button id="recordBtn" class="record-btn" aria-pressed="false" disabled>
+            <span class="record-glyph" aria-hidden="true"></span>
+            <span class="record-label">録音開始</span>
+          </button>
+          <div class="timer" id="timer">00:00</div>
+          <p class="rec-status" id="recStatus">録音できます</p>
+        </div>
+        <p class="rec-hint">10分で自動停止します。長い診療は分けて録音し、追記してください。</p>
+      </section>
+
+      <footer class="foot">下書きは必ず医師が確認・修正してください。確定はMOVACAL上で行います。</footer>
+    </div>
+  </main>
+
+  <!-- 結果ポップアップ -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <h2 id="modalTitle">カルテ下書き（編集可）</h2>
+        <button id="modalClose" class="icon-btn dark" aria-label="閉じる">閉じる</button>
+      </div>
+      <div class="modal-sub">
+        <span id="modalPatient" class="pill"></span>
+        <span id="charCount" class="char-count">0 文字</span>
+      </div>
+      <textarea id="note" class="note" spellcheck="false" placeholder="整形結果がここに表示されます"></textarea>
+
+      <div class="target">
+        <span class="target-label">書き込み先</span>
+        <div class="seg" role="radiogroup" aria-label="書き込み先">
+          <button class="seg-btn active" data-target="karte" role="radio" aria-checked="true">カルテ本文</button>
+          <button class="seg-btn" data-target="memo" role="radio" aria-checked="false">メモ</button>
+          <button class="seg-btn" data-target="oncall" role="radio" aria-checked="false">オンコール</button>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="copyBtn" class="btn btn-ghost btn-block">コピー</button>
+        <button id="execBtn" class="btn btn-accent">登録して実行</button>
+      </div>
+      <p id="msg" class="msg" role="status" aria-live="polite"></p>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>音声カルテ — ブックマークレット設定</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .doc { max-width: 620px; margin: 0 auto; padding: 16px; }
+    .doc h1 { font-size: 20px; }
+    .doc h2 { font-size: 15px; color: var(--ink-soft); margin-top: 22px; }
+    .code { width: 100%; min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; }
+    ol { padding-left: 1.2em; line-height: 1.8; }
+    .step-note { font-size: 13px; color: var(--muted); }
+    .warn { background: #fff7ed; border: 1px solid #f4d8b0; border-radius: 12px; padding: 12px; font-size: 13px; color: #8a5a13; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark"></span><span class="brand-name">音声カルテ</span><span class="brand-tag">設定</span></div>
+  </header>
+  <main class="doc">
+    <h1>カルテ画面から起動するブックマークレット</h1>
+    <p class="step-note">MOVACALのカルテを開いた状態でタップすると、画面の「ID:◯◯◯◯◯」（ORCA ID）と診療所を読み取って音声カルテを開きます。iOSではこれが患者ID自動取得の唯一の方法です（Safari拡張は使えないため）。</p>
+
+    <h2>1) 下のコードをコピー</h2>
+    <textarea id="code" class="code" readonly></textarea>
+    <div class="actions" style="margin-top:10px;">
+      <button id="copyCode" class="btn btn-accent">コードをコピー</button>
+    </div>
+
+    <h2>2) iPhone / iPad に登録</h2>
+    <ol>
+      <li>このページを Safari で「ブックマーク」に追加（共有 → ブックマークを追加）。名前は「音声カルテ」に。</li>
+      <li>ブックマーク一覧で「音声カルテ」を<strong>編集</strong>し、URL欄を全消去して、上のコードを<strong>貼り付け</strong>て保存。</li>
+      <li>お気に入りバー/ブックマークに「音声カルテ」が入ります。</li>
+    </ol>
+
+    <h2>3) 使い方</h2>
+    <ol>
+      <li>MOVACALで患者のカルテを開く。</li>
+      <li>ブックマークの「音声カルテ」をタップ → 患者IDを引き継いでアプリが開く。</li>
+      <li>録音 → 整形 → 確認・編集 → コピー または メモ/カルテ本文へ登録。</li>
+    </ol>
+
+    <div class="warn">
+      MOVACALのカルテ画面に表示される「ID:◯◯◯◯◯」（ORCA ID）を読み取って引き継ぎます。あわせてURLの先頭（例: <code>/20221/</code>）から診療所も自動判定します。うまく取得できない場合は、開いたアプリでIDを手入力すれば使えます。画面のIDの出方が違うときは、その画面を教えてください。読み取り箇所を調整します。
+    </div>
+  </main>
+
+  <script src="setup.js"></script>
+</body>
+</html>

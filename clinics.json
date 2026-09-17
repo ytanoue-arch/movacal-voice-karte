@@ -1,0 +1,66 @@
+{
+  "_comment": "全診療所のレジストリ。code はサーバー側のみで保持し、ブラウザには id と name しか返しません。id と code の両方が埋まっている院だけが選択肢に出ます。",
+  "clinics": [
+    {
+      "id": "20221",
+      "name": "日吉",
+      "code": "4TPbMFAiHSUk",
+      "memo_user_id": "21001"
+    },
+    {
+      "id": "20220",
+      "name": "武蔵小杉",
+      "code": "NNQChgTSz6ZY"
+    },
+    {
+      "id": "20014",
+      "name": "登米",
+      "code": "kZ3ACBrJHQbQ"
+    },
+    {
+      "id": "21489",
+      "name": "白石",
+      "code": "M7vu4hjZYpbN"
+    },
+    {
+      "id": "21345",
+      "name": "仙台北",
+      "code": "ATSdH6LKpEZT"
+    },
+    {
+      "id": "21406",
+      "name": "高知",
+      "code": "9EnyBikRMdka"
+    },
+    {
+      "id": "20891",
+      "name": "一関",
+      "code": "QBq7iCb4Qum2"
+    },
+    {
+      "id": "20910",
+      "name": "あゆみ仙台",
+      "code": "XqMr2zdKGBJW"
+    },
+    {
+      "id": "20275",
+      "name": "大崎",
+      "code": "hu0XnNfaNzqL"
+    },
+    {
+      "id": "20784",
+      "name": "栗原",
+      "code": "NEzAsc46R4mP"
+    },
+    {
+      "id": "21178",
+      "name": "名取",
+      "code": "WUDezutST0HF"
+    },
+    {
+      "id": "21969",
+      "name": "郡山",
+      "code": "Ae6hmRZCJ7XE"
+    }
+  ]
+}
