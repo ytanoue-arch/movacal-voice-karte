@@ -15,7 +15,9 @@ const movacal = require('./movacal');
 let CLINICS = [];
 function loadClinics() {
   try {
-    const raw = process.env.CLINICS_JSON || fs.readFileSync(path.join(__dirname, 'clinics.json'), 'utf8');
+    const file = (process.env.MOCK === '1' && !fs.existsSync(path.join(__dirname, 'clinics.json')))
+      ? 'clinics.example.json' : 'clinics.json';
+    const raw = process.env.CLINICS_JSON || fs.readFileSync(path.join(__dirname, file), 'utf8');
     CLINICS = (JSON.parse(raw).clinics || []).filter((c) => c && c.id && c.code);
   } catch (e) {
     console.warn('clinics.json 読み込み失敗:', e.message);
@@ -31,7 +33,9 @@ loadClinics();
 let USER_CLINICS = {};
 function loadUserClinics() {
   try {
-    const raw = process.env.USER_CLINICS_JSON || fs.readFileSync(path.join(__dirname, 'user-clinics.json'), 'utf8');
+    const ufile = (process.env.MOCK === '1' && !fs.existsSync(path.join(__dirname, 'user-clinics.json')))
+      ? 'user-clinics.example.json' : 'user-clinics.json';
+    const raw = process.env.USER_CLINICS_JSON || fs.readFileSync(path.join(__dirname, ufile), 'utf8');
     const obj = JSON.parse(raw);
     USER_CLINICS = {};
     for (const [k, v] of Object.entries(obj)) {
@@ -62,12 +66,17 @@ const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '')
 const oauthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
 // ---- Gemini ----
+// 開発用モックモード（MOCK=1）: MOVACAL/Gemini/Google認証を使わず、ダミー応答で画面を一通り動かせる。
+// 認証情報も患者データも不要なので、開発担当者のPCで安全に検証できる。
+const MOCK = process.env.MOCK === '1';
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
-if (!GEMINI_API_KEY) console.warn('⚠️  GEMINI_API_KEY 未設定（/api/dictate は失敗します）');
-if (!oauthClient && !APP_TOKEN_ENABLED) console.warn('⚠️  認証が無効です（GOOGLE_CLIENT_ID を設定してください）');
+if (MOCK) console.log('🧪 MOCKモードで起動します（MOVACAL/Geminiには接続しません。ダミー応答を返します）');
+if (!GEMINI_API_KEY && !MOCK) console.warn('⚠️  GEMINI_API_KEY 未設定（/api/dictate は失敗します）');
+if (!oauthClient && !APP_TOKEN_ENABLED && !MOCK) console.warn('⚠️  認証が無効です（GOOGLE_CLIENT_ID を設定してください）');
 if (APP_TOKEN_ENABLED) console.warn('⚠️  共有トークン(APP_TOKEN)が有効です。本番では無効化推奨。');
 
 // ---- 整形プロンプト（プロブレムリスト形式） ----
@@ -178,6 +187,23 @@ app.get('/api/clinics', authenticate, (req, res) => {
 });
 app.post('/api/dictate', authenticate, async (req, res) => {
   try {
+    if (MOCK) {
+      // Gemini を呼ばずにサンプルを返す（APIキー不要・課金なし）
+      await new Promise((r) => setTimeout(r, 800)); // 生成待ちの体感を再現
+      return res.json({
+        note: [
+          '# 腰痛',
+          '内容：数日前から腰痛あり。発熱なし。歩行は自立しているが動作時に痛みを訴える。',
+          '方針：アセトアミノフェンを頓用で開始。1週間後に再評価。',
+          '',
+          '# 高血圧',
+          '内容：本日血圧 142/88。内服は継続できている。',
+          '方針：現行処方を継続し、次回訪問時に再測定。',
+          '',
+          '（これはMOCKモードのサンプルです。実際の音声は解析していません）',
+        ].join('\n'),
+      });
+    }
     if (!genAI) return res.status(500).json({ error: 'GEMINI_API_KEY が未設定です' });
     const { audio, mimeType } = req.body || {};
     if (!audio || !mimeType) return res.status(400).json({ error: 'audio（Base64）と mimeType は必須です' });
@@ -202,6 +228,18 @@ app.post('/api/register', authenticate, async (req, res) => {
     const b = req.body || {};
     if (!b.orcaId) return res.status(400).json({ error: 'orcaId（ORCA ID）は必須です' });
     if (!b.content) return res.status(400).json({ error: 'content（本文）は必須です' });
+
+    if (MOCK) {
+      // MOVACAL には一切接続しない。書き込み先ごとの応答だけ再現する。
+      const t = b.target || 'karte';
+      console.log(`[MOCK] register target=${t} orca=${b.orcaId} clinic=${b.clinicId || '-'} len=${String(b.content).length}`);
+      await new Promise((r) => setTimeout(r, 500));
+      if (t === 'karte' && String(b.orcaId) === '9999') {
+        // 「診察完了で追記できない」ケースの確認用ダミー患者
+        return res.status(409).json({ error: '本日のカルテは診察完了のため追記できません（転記不要）。', reason: 'completed' });
+      }
+      return res.json({ ok: true, result: t === 'karte' ? { org_karte_id: 123456 } : { insert_id: 123456 } });
+    }
 
     const jst = jstNow();
     const target = ['memo', 'karte', 'oncall'].includes(b.target) ? b.target : 'karte';
@@ -279,7 +317,7 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.listen(PORT, () => console.log(`movacal-voice-karte v2 on :${PORT} (model=${GEMINI_MODEL}, auth=${oauthClient ? 'google' : (APP_TOKEN_ENABLED ? 'token' : 'open')})`));
+app.listen(PORT, () => console.log(`movacal-voice-karte v2 on :${PORT} (${MOCK ? 'MOCK' : 'live'}, model=${GEMINI_MODEL}, auth=${oauthClient ? 'google' : (APP_TOKEN_ENABLED ? 'token' : 'open')})`));
 
 function jstNow() {
   const d = new Date(Date.now() + 9 * 3600 * 1000);
