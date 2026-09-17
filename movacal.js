@@ -195,9 +195,17 @@ async function getDiagData(credential, p) {
   if (res.status === 204) return [];
   const text = await res.text();
   if (!res.ok) throw new Error(`getDiagdata.php ${res.status}: ${text}`);
-  let json; try { json = JSON.parse(text); } catch { throw new Error(`getDiagdata.php 応答が不正: ${text}`); }
+  // 該当カルテなしのとき 200 + 空ボディで返ることがある（仕様書は204だが実機は200空）
+  if (!text || !text.trim()) {
+    console.log(`getDiagdata: status=${res.status} empty-body → 該当カルテなし (orca=${p.orcaId} date=${p.actDate} clinic=${p.clinicId})`);
+    return [];
+  }
+  let json; try { json = JSON.parse(text); } catch { throw new Error(`getDiagdata.php 応答が不正(status=${res.status}): ${text.slice(0, 300)}`); }
   const d = json.diag_info || json.diag_data || json;
-  return Array.isArray(d) ? d : (d ? [d] : []);
+  const arr = Array.isArray(d) ? d : (d ? [d] : []);
+  // 診断用：件数とステータスのみ（本文は出さない）
+  console.log(`getDiagdata: status=${res.status} count=${arr.length} statuses=${arr.map((x) => x && x.status).join(',')} (orca=${p.orcaId} date=${p.actDate})`);
+  return arr;
 }
 
 /** 主訴編集（既存カルテ本文の上書き）。中断/準備のカルテのみ編集可。 */

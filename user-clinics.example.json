@@ -1,0 +1,4 @@
+{
+  "_comment": "【サンプル】実ファイルは user-clinics.json（gitignore対象）。Googleサインインしたユーザーごとの既定診療所。キーはメール（小文字）、値は clinic_id。環境変数 USER_CLINICS_JSON でも設定可。",
+  "example@yamato-clinic.org": "20221"
+}

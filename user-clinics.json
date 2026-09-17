@@ -1,4 +1,0 @@
-{
-  "_comment": "Googleサインインしたユーザーごとの既定（ホーム）診療所。キーはメール（小文字）、値は clinic_id（clinics.json のID）。ここに無いユーザーは MOVACAL_CLINIC_ID が既定になります。サインイン後にセレクタで変更も可能（その変更はそのセッション内で記憶）。USER_CLINICS_JSON 環境変数でも同じ形式で設定できます。",
-  "y.tanoue@yamato-clinic.org": "20221"
-}

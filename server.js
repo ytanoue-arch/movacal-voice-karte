@@ -246,7 +246,7 @@ app.post('/api/register', authenticate, async (req, res) => {
         return res.status(409).json({
           error: r.reason === 'completed'
             ? '本日のカルテは診察完了のため追記できません（転記不要）。'
-            : '本日のカルテが見つかりませんでした。先にMOVACALでカルテを作成してください。',
+            : '本日のカルテが見つかりませんでした。MOVACALでカルテを作成し、診察完了にせず（中断または準備の状態で）保存してから再度お試しください。',
           reason: r.reason,
         });
       }

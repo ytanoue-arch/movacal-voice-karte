@@ -4,3 +4,9 @@ node_modules/
 service-account.json
 credentials.json
 *.log
+.DS_Store
+
+# 実データ（MOVACAL認証情報・スタッフ情報を含むためリポジトリに置かない）
+# → Cloud Run の環境変数 CLINICS_JSON / USER_CLINICS_JSON で管理
+clinics.json
+user-clinics.json

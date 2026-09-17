@@ -1,66 +1,66 @@
 {
-  "_comment": "全診療所のレジストリ。code はサーバー側のみで保持し、ブラウザには id と name しか返しません。id と code の両方が埋まっている院だけが選択肢に出ます。",
+  "_comment": "【サンプル】実ファイルは clinics.json（gitignore対象）。code は MOVACAL API の認証情報に相当するため、リポジトリには置かず Cloud Run の環境変数 CLINICS_JSON で管理します。",
   "clinics": [
     {
       "id": "20221",
       "name": "日吉",
-      "code": "4TPbMFAiHSUk",
-      "memo_user_id": "21001"
+      "code": "XXXXXXXXXXXX",
+      "memo_user_id": "00000"
     },
     {
       "id": "20220",
       "name": "武蔵小杉",
-      "code": "NNQChgTSz6ZY"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "20014",
       "name": "登米",
-      "code": "kZ3ACBrJHQbQ"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "21489",
       "name": "白石",
-      "code": "M7vu4hjZYpbN"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "21345",
       "name": "仙台北",
-      "code": "ATSdH6LKpEZT"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "21406",
       "name": "高知",
-      "code": "9EnyBikRMdka"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "20891",
       "name": "一関",
-      "code": "QBq7iCb4Qum2"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "20910",
       "name": "あゆみ仙台",
-      "code": "XqMr2zdKGBJW"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "20275",
       "name": "大崎",
-      "code": "hu0XnNfaNzqL"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "20784",
       "name": "栗原",
-      "code": "NEzAsc46R4mP"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "21178",
       "name": "名取",
-      "code": "WUDezutST0HF"
+      "code": "XXXXXXXXXXXX"
     },
     {
       "id": "21969",
       "name": "郡山",
-      "code": "Ae6hmRZCJ7XE"
+      "code": "XXXXXXXXXXXX"
     }
   ]
 }
