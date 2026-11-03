@@ -67,7 +67,7 @@
           <div class="timer" id="timer">00:00</div>
           <p class="rec-status" id="recStatus">録音できます</p>
         </div>
-        <p class="rec-hint">10分で自動停止します。長い診療は分けて録音し、追記してください。</p>
+        <p class="rec-hint">冒頭で「仙台北の、ID 00986の患者です」と話すと、診療所と患者IDが自動で入ります。10分で自動停止します。長い診療は分けて録音し、追記してください。</p>
       </section>
 
       <footer class="foot">下書きは必ず医師が確認・修正してください。確定はMOVACAL上で行います。</footer>
@@ -81,8 +81,22 @@
         <h2 id="modalTitle">カルテ下書き（編集可）</h2>
         <button id="modalClose" class="icon-btn dark" aria-label="閉じる">閉じる</button>
       </div>
+      <div class="pt-bar">
+        <div class="pt-fields">
+          <select id="mClinic" aria-label="診療所"></select>
+          <input id="mOrca" type="text" aria-label="患者ID" placeholder="患者ID" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+        <p id="ptCheck" class="pt-check">患者IDを入力してください</p>
+        <div id="ptConflict" class="pt-conflict" hidden>
+          <p>画面の患者と、音声で話した患者が異なります。どちらに記載しますか？</p>
+          <div class="pt-choices">
+            <button id="useScreen" class="btn btn-ghost" type="button"></button>
+            <button id="useSpoken" class="btn btn-ghost" type="button"></button>
+          </div>
+        </div>
+      </div>
       <div class="modal-sub">
-        <span id="modalPatient" class="pill"></span>
+        <span class="pill">内容を確認・修正してください</span>
         <span id="charCount" class="char-count">0 文字</span>
       </div>
       <textarea id="note" class="note" spellcheck="false" placeholder="整形結果がここに表示されます"></textarea>

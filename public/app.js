@@ -10,7 +10,9 @@ const el = {
   clinic: $('clinic'), clinicField: $('clinicField'),
   recordBtn: $('recordBtn'), recLabel: document.querySelector('.record-label'),
   timer: $('timer'), recStatus: $('recStatus'),
-  modal: $('modal'), modalClose: $('modalClose'), modalPatient: $('modalPatient'),
+  modal: $('modal'), modalClose: $('modalClose'),
+  mClinic: $('mClinic'), mOrca: $('mOrca'), ptCheck: $('ptCheck'),
+  ptConflict: $('ptConflict'), useScreen: $('useScreen'), useSpoken: $('useSpoken'),
   note: $('note'), charCount: $('charCount'),
   copyBtn: $('copyBtn'), execBtn: $('execBtn'), msg: $('msg'),
 };
@@ -28,6 +30,13 @@ let urlClinicId = '';
 let urlClinicCode = '';
 let urlClinicName = '';   // MOVACALヘッダーの診療所名（自動判別用）
 let pendingOrcaId = '';   // ブックマークレットから引き継いだ患者ID（ログイン後に再反映）
+let clinicExplicit = false; // 診療所がブックマーク or 手動選択で明示されたか（音声との食い違い判定に使う）
+
+// 患者の本人確認（取り違え防止）
+let pt = { key: '', ok: false, pending: false, notFound: false, error: '', info: null };
+let ptSeq = 0, ptTimer = null;
+let conflict = null;        // { screen:{clinicId,orcaId}, spoken:{clinicId,orcaId} }
+let registering = false;
 
 let mediaRecorder = null, mediaStream = null, chunks = [], recMime = '';
 let startedAt = 0, timerInt = null, autoStopTimer = null, busy = false;
@@ -165,18 +174,20 @@ function showApp() {
 }
 
 async function loadClinics() {
-  if (!clinicSelectorOn) { el.clinicField.hidden = true; return; }
+  if (!clinicSelectorOn) { el.clinicField.hidden = true; el.mClinic.hidden = true; verifyPatient(); return; }
   try {
     const r = await fetch('/api/clinics', { headers: authHeaders() });
-    if (!r.ok) return;
+    if (!r.ok) { verifyPatient(); return; }
     const d = await r.json();
-    if (!d.clinics || !d.clinics.length) { el.clinicField.hidden = true; return; }
+    if (!d.clinics || !d.clinics.length) { el.clinicField.hidden = true; el.mClinic.hidden = true; verifyPatient(); return; }
     el.clinicField.hidden = false;
-    el.clinic.innerHTML = '';
+    el.clinic.innerHTML = ''; el.mClinic.innerHTML = '';
     d.clinics.forEach((c) => {
-      const o = document.createElement('option');
-      o.value = c.id; o.textContent = c.name;
-      el.clinic.appendChild(o);
+      for (const sel of [el.clinic, el.mClinic]) {
+        const o = document.createElement('option');
+        o.value = c.id; o.textContent = c.name;
+        sel.appendChild(o);
+      }
     });
     // MOVACALヘッダーの診療所名から自動判別（例:「やまと在宅診療所あゆみ仙台」→ あゆみ仙台）
     let matchedClinicId = '';
@@ -186,8 +197,11 @@ async function loadClinics() {
     }
     const pre = urlClinicId || matchedClinicId || readSession('mvk_clinic') || d.default || '';
     if (pre) el.clinic.value = pre;
-    el.clinic.onchange = () => saveSession('mvk_clinic', el.clinic.value);
+    if (urlClinicId || matchedClinicId) clinicExplicit = true;
+    el.mClinic.value = el.clinic.value;
+    el.clinic.onchange = () => { clinicExplicit = true; saveSession('mvk_clinic', el.clinic.value); el.mClinic.value = el.clinic.value; scheduleVerify(0); };
   } catch { /* 単一院運用（レジストリ無し）はそのまま */ }
+  verifyPatient();
 }
 
 function authHeaders() {
@@ -286,7 +300,9 @@ async function sendForDictation(blob, mimeType) {
     if (!res.ok) throw new Error(data.error || `エラー ${res.status}`);
 
     const note = (data.note || '').trim();
+    const spokenMsg = applySpoken(data.spoken);
     openModal(note); // 別画面(ポップアップ)で編集
+    if (spokenMsg) setMsg(spokenMsg.text, spokenMsg.kind);
     el.timer.textContent = '00:00';
     setRecStatus('完了', false);
   } catch (e) {
@@ -306,13 +322,16 @@ function openModal(note) {
   } else {
     el.note.value = note;
   }
-  el.modalPatient.textContent = 'ORCA ID: ' + (el.orcaId.value || '—');
+  el.mOrca.value = el.orcaId.value;
+  if (clinicSelectorOn) el.mClinic.value = el.clinic.value;
   updateCharCount();
   el.modal.hidden = false;
-  setMsg('整形しました。確認・修正してください。', 'ok');
+  setMsg('整形しました。患者と内容を確認してください。', 'ok');
+  renderConflict();
+  verifyPatient();
 }
 function closeModal(clear) {
-  if (clear) el.note.value = ''; // 実行後/破棄で削除
+  if (clear) { el.note.value = ''; conflict = null; renderConflict(); } // 実行後/破棄で削除
   el.modal.hidden = true;
   setMsg('', '');
   if (clear) { refreshRecordEnabled(); }
@@ -348,14 +367,18 @@ el.copyBtn.addEventListener('click', async () => {
 // 登録して実行
 el.execBtn.addEventListener('click', async () => {
   const content = el.note.value.trim();
-  const orcaId = el.orcaId.value.trim();
+  const orcaId = normId(el.orcaId.value);
   if (!content) { setMsg('登録する本文がありません。', 'err'); return; }
-  if (!orcaId) { setMsg('ORCA ID を入力してください。', 'err'); return; }
+  if (!orcaId) { setMsg('患者IDを入力してください。', 'err'); return; }
+  if (conflict) { setMsg('画面と音声で患者が異なります。どちらに記載するか選んでください。', 'err'); return; }
+  if (!pt.ok || pt.key !== ptKey()) { setMsg('患者の確認が取れていないため登録できません。', 'err'); return; }
   const where = target === 'memo' ? 'メモ' : (target === 'oncall' ? 'オンコール' : 'カルテ本文');
   const verb = target === 'karte' ? '本日のカルテのA/P欄に追記' : '登録';
-  if (!confirm(`ORCA ID ${orcaId} の【${where}】に${verb}します。よろしいですか？`)) return;
+  const who = `${clinicLabel(el.clinic.value)} ID ${orcaId}\n${pt.info.name} 様${pt.info.age != null ? `（${pt.info.age}歳）` : ''}`;
+  if (!confirm(`${who}\n\nこの患者の【${where}】に${verb}します。よろしいですか？`)) return;
 
   const orig = el.execBtn.textContent;
+  registering = true;
   el.execBtn.disabled = true; el.copyBtn.disabled = true;
   el.execBtn.innerHTML = '<span class="spin"></span>登録中';
   setMsg(`${where}に登録しています…`, 'info');
@@ -389,9 +412,138 @@ el.execBtn.addEventListener('click', async () => {
     setMsg('登録に失敗しました: ' + (e.message || e), 'err');
   } finally {
     el.execBtn.textContent = orig;
-    el.execBtn.disabled = false; el.copyBtn.disabled = false;
+    registering = false;
+    el.copyBtn.disabled = false;
+    updateExecEnabled();
   }
 });
 
 function setMsg(t, kind) { el.msg.textContent = t || ''; el.msg.className = 'msg' + (kind ? ' ' + kind : ''); }
 function pad(n) { return String(n).padStart(2, '0'); }
+
+// ---------- 患者の特定と本人確認（取り違え防止） ----------
+function normId(v) {
+  return String(v || '')
+    .replace(/[０-９Ａ-Ｚａ-ｚ]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[\s　\-ー－‐]/g, '')
+    .replace(/[^0-9A-Za-z_]/g, '');
+}
+function ptKey() { return `${clinicSelectorOn ? el.clinic.value : ''}|${normId(el.orcaId.value)}`; }
+function clinicLabel(id) {
+  if (!clinicSelectorOn) return '';
+  const o = Array.from(el.clinic.options).find((x) => x.value === String(id));
+  return o ? o.textContent : '';
+}
+
+function setPatientFields(clinicId, orcaId) {
+  if (clinicSelectorOn && clinicId && Array.from(el.clinic.options).some((o) => o.value === String(clinicId))) {
+    el.clinic.value = String(clinicId); el.mClinic.value = String(clinicId);
+  }
+  el.orcaId.value = orcaId || ''; el.mOrca.value = orcaId || '';
+  verifyPatient();
+}
+
+// 音声で読み取った診療所・IDを反映。画面の値と食い違えば上書きせず選ばせる。
+function applySpoken(sp) {
+  if (!sp) return null;
+  const screen = { clinicId: clinicSelectorOn ? el.clinic.value : '', orcaId: normId(el.orcaId.value) };
+  const next = { clinicId: screen.clinicId, orcaId: screen.orcaId };
+  if (clinicSelectorOn && sp.clinicId) next.clinicId = sp.clinicId;
+  if (sp.orcaId) next.orcaId = sp.orcaId;
+
+  const idDiff = !!(screen.orcaId && sp.orcaId && screen.orcaId !== sp.orcaId);
+  const clinicDiff = !!(clinicSelectorOn && clinicExplicit && sp.clinicId && screen.clinicId && screen.clinicId !== sp.clinicId);
+  let unknownClinic = '';
+  if (sp.clinicText && !sp.clinicId) unknownClinic = `「${sp.clinicText}」に該当する診療所が分かりませんでした。診療所を選択してください。`;
+
+  if (idDiff || clinicDiff) {
+    conflict = { screen, spoken: next };
+    return { text: '画面と音声で患者が異なります。上でどちらに記載するか選んでください。', kind: 'err' };
+  }
+  conflict = null;
+  setPatientFields(next.clinicId, next.orcaId);
+  if (unknownClinic) return { text: unknownClinic, kind: 'err' };
+  return { text: '音声から患者を読み取りました。氏名が正しいか確認してください。', kind: 'ok' };
+}
+
+function renderConflict() {
+  if (!conflict) { el.ptConflict.hidden = true; updateExecEnabled(); return; }
+  const lab = (x) => `${clinicLabel(x.clinicId) ? clinicLabel(x.clinicId) + ' ' : ''}ID ${x.orcaId || '—'}`;
+  el.useScreen.textContent = '画面の患者：' + lab(conflict.screen);
+  el.useSpoken.textContent = '音声の患者：' + lab(conflict.spoken);
+  el.ptConflict.hidden = false;
+  updateExecEnabled();
+}
+el.useScreen.addEventListener('click', () => { const c = conflict; conflict = null; renderConflict(); setPatientFields(c.screen.clinicId, c.screen.orcaId); setMsg('画面の患者に記載します。氏名を確認してください。', 'ok'); });
+el.useSpoken.addEventListener('click', () => { const c = conflict; conflict = null; renderConflict(); setPatientFields(c.spoken.clinicId, c.spoken.orcaId); setMsg('音声の患者に記載します。氏名を確認してください。', 'ok'); });
+
+// 入力欄の同期（メイン画面 ⇄ ポップアップ）
+el.orcaId.addEventListener('input', () => { el.mOrca.value = el.orcaId.value; scheduleVerify(600); });
+el.mOrca.addEventListener('input', () => { el.orcaId.value = el.mOrca.value; scheduleVerify(600); });
+el.mClinic.addEventListener('change', () => {
+  el.clinic.value = el.mClinic.value; clinicExplicit = true;
+  saveSession('mvk_clinic', el.clinic.value); scheduleVerify(0);
+});
+
+function scheduleVerify(ms) { clearTimeout(ptTimer); pt.ok = false; updateExecEnabled(); ptTimer = setTimeout(verifyPatient, ms); }
+
+async function verifyPatient() {
+  clearTimeout(ptTimer);
+  const orcaId = normId(el.orcaId.value);
+  const key = ptKey();
+  if (!orcaId) { pt = { key, ok: false }; renderPatient(); return; }
+  if (pt.key === key && !pt.pending && (pt.ok || pt.notFound)) { renderPatient(); return; } // 確認済み
+  const seq = ++ptSeq;
+  pt = { key, ok: false, pending: true };
+  renderPatient();
+  try {
+    const clinicId = clinicSelectorOn ? (el.clinic.value || undefined) : undefined;
+    const r = await fetch('/api/patient', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ orcaId, clinicId }) });
+    if (seq !== ptSeq) return;
+    if (r.status === 401) { pt = { key, ok: false, error: '再ログインが必要です' }; renderPatient(); reauth(); return; }
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) pt = { key, ok: false, error: d.error || `確認エラー ${r.status}` };
+    else if (d.found) pt = { key, ok: true, info: d };
+    else pt = { key, ok: false, notFound: true };
+  } catch {
+    if (seq !== ptSeq) return;
+    pt = { key, ok: false, error: '通信エラーで確認できませんでした' };
+  }
+  renderPatient();
+}
+
+function renderPatient() {
+  const id = normId(el.orcaId.value);
+  const cl = clinicLabel(el.clinic.value);
+  const where = `${cl ? cl + ' ' : ''}ID ${id}`;
+  let text = '', cls = 'pt-check', hint = '', hintCls = 'id-hint';
+  if (!id) { text = '患者IDを入力してください'; hint = '冒頭で診療所名とIDを話すか、カルテ画面のブックマークから開いてください'; }
+  else if (pt.pending) { text = `${where} を確認中…`; hint = text; }
+  else if (pt.ok && pt.info) {
+    const i = pt.info;
+    const attrs = [i.age != null ? `${i.age}歳` : '', i.gender].filter(Boolean).join('・');
+    const st = i.status && i.status !== 'ACTIVE' ? `（ステータス: ${i.status}）` : '';
+    text = `✓ ${i.name} 様${attrs ? `（${attrs}）` : ''}`;
+    cls += ' ok';
+    hint = `${where}　${i.name} 様${attrs ? `（${attrs}）` : ''}${st}`; hintCls += ' ok';
+    el.ptCheck.innerHTML = '';
+    el.ptCheck.className = cls;
+    el.ptCheck.append(document.createTextNode(text));
+    const sub = document.createElement('span'); sub.className = 'pt-sub';
+    sub.textContent = `${where}${i.kana ? '　' + i.kana : ''}${st}`;
+    el.ptCheck.append(sub);
+    el.idHint.textContent = hint; el.idHint.className = hintCls;
+    updateExecEnabled();
+    return;
+  }
+  else if (pt.notFound) { text = `✗ ${where} の患者は見つかりません。診療所とIDを確認してください。`; cls += ' err'; hint = text; hintCls += ' err'; }
+  else if (pt.error) { text = `✗ ${pt.error}（登録できません）`; cls += ' err'; hint = text; hintCls += ' err'; }
+  el.ptCheck.textContent = text; el.ptCheck.className = cls;
+  el.idHint.textContent = hint; el.idHint.className = hintCls;
+  updateExecEnabled();
+}
+
+function updateExecEnabled() {
+  const ready = pt.ok && pt.key === ptKey() && !conflict && !registering;
+  el.execBtn.disabled = !ready;
+}

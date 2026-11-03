@@ -45,6 +45,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 
 .id-hint { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
 .id-hint.ok { color: var(--ok); }
+.id-hint.err { color: var(--rec); }
 
 /* 認証 */
 .auth-card { text-align: center; }
@@ -106,3 +107,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 
 .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes rot { to { transform: rotate(360deg); } }
+
+/* 患者確認バー（取り違え防止） */
+.pt-bar { margin: 10px 0 2px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: #f7fafa; }
+.pt-fields { display: flex; gap: 8px; }
+.pt-fields select { flex: 1 1 0; min-height: 44px; padding-top: 9px; padding-bottom: 9px; }
+.pt-fields input { flex: 1 1 0; min-height: 44px; padding-top: 9px; padding-bottom: 9px; font-variant-numeric: tabular-nums; }
+.pt-check { margin: 8px 2px 0; font-size: 14px; line-height: 1.5; color: var(--muted); }
+.pt-check.ok { color: var(--ok); font-weight: 600; }
+.pt-check.err { color: var(--rec); font-weight: 600; }
+.pt-check .pt-sub { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+.pt-conflict { margin-top: 10px; padding: 10px; border-radius: 12px; background: #fff4e5; border: 1px solid #f0c27b; }
+.pt-conflict p { margin: 0 0 8px; font-size: 13px; color: #7a4b00; }
+.pt-choices { display: flex; flex-direction: column; gap: 8px; }
+.pt-choices .btn { min-height: 44px; font-size: 14px; text-align: left; justify-content: flex-start; }

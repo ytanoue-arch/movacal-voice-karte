@@ -7,7 +7,7 @@ try { require('dotenv').config(); } catch (_) { /* dotenv 未導入でも動作 
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai'); // Vertex AI（既定）/ APIキー方式 の両対応SDK
 const { OAuth2Client } = require('google-auth-library');
 const movacal = require('./movacal');
 
@@ -26,6 +26,48 @@ function loadClinics() {
   console.log(`clinics loaded: ${CLINICS.length} 院`);
 }
 function clinicById(id) { return CLINICS.find((c) => String(c.id) === String(id)); }
+
+// 口述された診療所名をレジストリと照合する。曖昧（複数該当）なら null。
+function matchClinic(spoken) {
+  const t = String(spoken || '').replace(/\s|　/g, '').replace(/^やまと在宅診療所|^やまと|診療所$|クリニック$/g, '');
+  if (!t) return null;
+  const exact = CLINICS.find((c) => c.name === t);
+  if (exact) return exact;
+  // 口述に院名がまるごと含まれる（例:「やまと仙台北」→ 仙台北）。最も長い院名を優先
+  const inSpoken = CLINICS.filter((c) => c.name && t.includes(c.name)).sort((a, b) => b.name.length - a.name.length);
+  if (inSpoken.length) return inSpoken[0];
+  // 口述が院名の一部（例:「小杉」→ 武蔵小杉）。一意に決まるときだけ採用
+  const partial = CLINICS.filter((c) => c.name && t.length >= 2 && c.name.includes(t));
+  return partial.length === 1 ? partial[0] : null;
+}
+
+// 患者IDの表記ゆれを正規化（全角→半角、空白・ハイフン除去）。先頭の0は保持。
+function normalizeId(v) {
+  return String(v || '')
+    .replace(/[０-９Ａ-Ｚａ-ｚ]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[\s　\-ー－‐]/g, '')
+    .replace(/[^0-9A-Za-z_]/g, '');
+}
+
+// AI出力の1行目「@@CLINIC=..|ID=..@@」を取り出し、本文から除く。
+function splitSpokenHeader(raw) {
+  const text = String(raw || '');
+  const re = /@@\s*CLINIC\s*=([^|@\n]*)\|\s*ID\s*=([^@\n]*)@@[ \t]*\r?\n?/;
+  const m = re.exec(text);
+  if (!m) return { note: text.trim(), spoken: null };
+  const note = (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim();
+  const clinicText = m[1].trim();
+  const orcaId = normalizeId(m[2]);
+  const hit = clinicText ? matchClinic(clinicText) : null;
+  return {
+    note,
+    spoken: (clinicText || orcaId) ? {
+      clinicText, orcaId,
+      clinicId: hit ? String(hit.id) : '',
+      clinicName: hit ? hit.name : '',
+    } : null,
+  };
+}
 function clinicChoices() { return CLINICS.map((c) => ({ id: String(c.id), name: c.name })); }
 loadClinics();
 
@@ -71,35 +113,110 @@ const oauthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null
 const MOCK = process.env.MOCK === '1';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+// Vertex AI（既定）: Cloud Run のサービスアカウントで認証するため APIキー不要。
+// リージョンを asia-northeast1 に固定でき、患者情報の越境移転を避けられる。
+// VERTEX_PROJECT は必須（Cloud Run は GOOGLE_CLOUD_PROJECT を自動設定しないため）。
+// USE_VERTEX=0 のときだけ、緊急用に APIキー方式（GEMINI_API_KEY）で動く。
+const USE_VERTEX = process.env.USE_VERTEX !== '0';
+const VERTEX_PROJECT = process.env.VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || '';
+const VERTEX_LOCATION = process.env.VERTEX_LOCATION || 'asia-northeast1';
+
+let ai = null;
+let aiBackend = 'none';
+if (!MOCK) {
+  try {
+    if (USE_VERTEX) {
+      if (!VERTEX_PROJECT) throw new Error('VERTEX_PROJECT が未設定です');
+      ai = new GoogleGenAI({ vertexai: true, project: VERTEX_PROJECT, location: VERTEX_LOCATION });
+      aiBackend = 'vertex';
+    } else if (GEMINI_API_KEY) {
+      ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      aiBackend = 'apikey';
+    }
+  } catch (e) {
+    console.error('AI 初期化に失敗:', e && (e.message || e));
+  }
+}
 
 if (MOCK) console.log('🧪 MOCKモードで起動します（MOVACAL/Geminiには接続しません。ダミー応答を返します）');
-if (!GEMINI_API_KEY && !MOCK) console.warn('⚠️  GEMINI_API_KEY 未設定（/api/dictate は失敗します）');
+else if (aiBackend === 'vertex') console.log(`Vertex AI を使用（project=${VERTEX_PROJECT}, location=${VERTEX_LOCATION}, model=${GEMINI_MODEL}）`);
+else if (aiBackend === 'apikey') console.warn('⚠️  APIキー方式で動作しています（USE_VERTEX=0）。本番は Vertex AI 推奨');
+else console.warn('⚠️  AIが未設定です（VERTEX_PROJECT を設定してください）');
 if (!oauthClient && !APP_TOKEN_ENABLED && !MOCK) console.warn('⚠️  認証が無効です（GOOGLE_CLIENT_ID を設定してください）');
 if (APP_TOKEN_ENABLED) console.warn('⚠️  共有トークン(APP_TOKEN)が有効です。本番では無効化推奨。');
 
 // ---- 整形プロンプト（プロブレムリスト形式） ----
-const FORMAT_PROMPT = `あなたは在宅・外来診療の診療録作成を支援するアシスタントです。
-これは医師が診察内容を口述した音声です。文字起こしし、問題志向（プロブレムリスト）形式の診療録の下書きに整形してください。
+const FORMAT_PROMPT = `あなたは在宅診療に精通した医師の診療録作成を補助するアシスタントです。
+これは医師が診察内容を口述した音声です。文字起こしし、下記の記載例と同じ書式・文体・水準の診療録に整形してください。
 
-【構成】
-- 診察で扱った問題（プロブレム）ごとに、行頭を「#」で始めて問題名を書く（例：# 高血圧、# 誤嚥性肺炎の経過、# 褥瘡）。
-- 各プロブレムの直下に「内容：」と「方針：」の見出しを置き、それぞれにまとめる。
-  内容：その問題に関する訴え・自覚症状・身体所見・バイタル・検査値など、診察で分かった事実。
-  方針：その問題に対する評価・注意点・次回以降の指示・処方/処置の変更・フォロー方針。
-- 問題が複数あれば「#」見出しを複数並べる。1つなら1つでよい。
+【冒頭の患者特定】
+- 医師は口述の冒頭で「仙台北の、ID 00986の患者です」のように、診療所名と患者IDを述べることがある。
+- 出力の1行目には必ず、次の形式の行を1行だけ出す：@@CLINIC=診療所名|ID=患者ID@@
+  例：@@CLINIC=仙台北|ID=00986@@
+- 述べられていない項目は空にする（例：@@CLINIC=|ID=@@、@@CLINIC=日吉|ID=@@）。
+- 診療所名は口述された呼び方のまま書く（例：仙台北、日吉、あゆみ仙台、武蔵小杉）。「やまと在宅診療所」などの法人名は付けない。
+- 患者IDは口述された英数字を一字ずつそのまま書く。先頭の0も残す（「ゼロゼロキュウハチロク」は00986）。桁を補ったり削ったりしない。区切りの空白やハイフンは除く。
+- 診療所名・患者ID・「〜の患者です」といった患者特定のための発言は、2行目以降の本文には含めない。
 
-【厳守事項】
-- 話された内容のみを使用し、推測・創作・補完はしない。情報が無い項目は無理に埋めない。
-- 聞き取れない/不確実な箇所は [要確認] と記す。
-- 検査値・バイタル・所見・薬剤名・用量はそのまま正確に残す。数値や単位を変えない。
-- 行頭の「#」はプロブレム見出しにのみ使う。それ以外の装飾記号（*, ■, 【】 など）は使わない。
-- 前置き・要約・あいさつは付けない。診療録本文だけを出力する。
-- 口語のフィラーや言い直しは整理し、診療録として自然な書き言葉にする。意味は変えない。
-- 医師がレビュー・修正する前提の下書きである。
+【書式】
+- 問題ごとに、1行目を半角の「# 」で始めて見出しを書く。
+- 2行目を「内容：」で始め、経過、本日の所見、現在の状態を1段落で書く。
+- 3行目を「方針：」で始め、評価と方針を1段落で書く。口述に方針がなければ「方針：」の行は書かない。
+- 問題と問題の間は1行空ける。
+- 日付行や前置きは付けない。本文は2行目（患者特定の行の次）から「# 」で始める。
 
-出力は「# プロブレム名 / 内容： / 方針：」の本文のみ。`;
+【見出しの立て方】
+- 関連する病名は「、」で並べて一つの見出しにまとめる（例：# 骨粗鬆症、腰椎圧迫骨折）。
+- その問題を規定する要点（診断の根拠となった検査や日付、部位）が口述にあれば、見出しの後ろの（）内に書く（例：（8/18 MRIでL1、L2付近の新規圧迫骨折））。口述になければ（）は付けない。
+- 症状の管理や薬剤調整など、独立した方針があるものは別の見出しにする（例：# 腰痛症 として疼痛コントロールを書く）。
+- 全体に関わる方針、急変時の対応、療養場所の意向、家族との相談内容があれば「# 今後の方針」にまとめる。
+
+【文体】
+- 短いフレーズを「、」と「。」でつなぐ診療録の文体にする。体言止めを基本とし、「です・ます」は使わない。
+- 「〜である」「〜している状態である」「〜が出ている」のような説明調の冗長な文末は避ける。
+  書き換え例：
+  「1本杖を用いてトイレまでの歩行は自立している。」→「一本杖でトイレ歩行自立。」
+  「痛みは少しずつ良くなってきている。」→「疼痛は改善傾向。」
+  「経過に大きな変化はない。」→「経過に著変なし。」
+- 方針には、口述された理由を添える（例：「NSAIDs使用期間が長くなっているため、胃薬の併用を確認し、次回採血で腎機能・貧血を確認する。」）。
+- 方針は具体的に書く。薬剤の変更や継続、他科での治療と次回予定、受診予定、検査予定、確認事項、本人や家族との確認内容を漏らさない。
+
+【用語と表記】
+- 診療科や職種、サービスは正式名で書く：整形外科、訪問リハビリ、訪問看護、ショートステイ、ケアマネジャー。
+- 剤形は「坐薬」「貼付剤」と書く（口述で「サポ」と言われても「ボルタレン坐薬」と書く）。
+- 用法は「3錠分3」「1日1回」「疼痛時」「早朝6時頃」のように書く。「3かけ」「3回に分けて」は「分3」と書く。
+- 評価尺度や数値は空けずに書く：NRS2〜3、SpO2 96%、BT36.8℃、Na130、Alb2.4。
+- 日付は「8/18」「10/14」、月だけなら「次回1月」と書く。範囲は「〜」を使う。
+- 並列は「・」でつなぐ（例：本人・娘様、腎機能・貧血）。
+- 医学用語や略語は口述に合わせて適切に用いる（例：NSAIDs、新規圧迫骨折、体動時痛、改善傾向、転倒予防）。
+
+【選択肢の併記】
+- 医師が複数の選択肢を挙げて、まだ決めていない場合は【A／B】の形で併記する（例：【1日1回定期＋疼痛時／疼痛時のみ】）。医師が決めた内容は選択肢にせず、そのまま書く。
+
+【使用してよい記号】
+- 見出しの「# 」、（）、、。・〜＋、選択肢の併記と要確認に使う【】と／、日付や数値の表記に必要な記号のみ。
+- 箇条書き（-、＊、数字の列挙）は使わない。
+
+【聞き取りと厳守事項】
+- 在宅医療の口述で使われる用語、薬剤名、用法の言い回しは、医学的文脈から意図どおりの正しい表記に整える。
+- 音声が不明瞭で語を特定できない場合、または薬剤名、用量、数値が複数に解釈できる場合に限り、その箇所に【要確認】と記す。医学的文脈から一意に定まる語は要確認にしない。
+- 口述されていない事実、所見、検査値、評価、方針を創作しない。口述された内容は要約しすぎず、数値、日付、用量、部位を省略しない。
+- 口語のフィラーや言い直しは整理する。意味は変えない。
+
+【記載例】
+以下は書式と文体を示すための例である。書式と文体だけを参考にし、薬剤名や予定などの内容は流用しないこと。口述にない内容を書き加えてはならない。
+
+# 骨粗鬆症、腰椎圧迫骨折（8/18 MRIでL1、L2付近の新規圧迫骨折）
+内容：整形外科より1ヶ月安静の指示、訪問リハビリ休止中。現在は一本杖でトイレ歩行自立。
+方針：10/14整形外科受診にてリハビリ再開可否を確認予定。プラリアは整形外科で継続（次回1月）。転倒予防について本人・娘様と確認。
+
+# 腰痛症
+内容：ボルタレン坐薬は1日1回程度（早朝6時頃）、カロナール3錠分3で、坐薬使用後NRS2〜3。疼痛は改善傾向。
+方針：使用頻度の減少に合わせ、ボルタレン坐薬を【1日1回定期＋疼痛時／疼痛時のみ】へ減量。NSAIDs使用期間が長くなっているため、胃薬の併用を確認し、次回採血で腎機能・貧血を確認する。
+
+出力は、1行目の患者特定の行と、2行目以降の「# 」で始まる診療録本文のみ。`;
 
 // ---- セキュリティヘッダ ----
 app.use((req, res, next) => {
@@ -190,32 +307,42 @@ app.post('/api/dictate', authenticate, async (req, res) => {
     if (MOCK) {
       // Gemini を呼ばずにサンプルを返す（APIキー不要・課金なし）
       await new Promise((r) => setTimeout(r, 800)); // 生成待ちの体感を再現
-      return res.json({
-        note: [
-          '# 腰痛',
-          '内容：数日前から腰痛あり。発熱なし。歩行は自立しているが動作時に痛みを訴える。',
-          '方針：アセトアミノフェンを頓用で開始。1週間後に再評価。',
+      const { note, spoken } = splitSpokenHeader([
+          '@@CLINIC=仙台北|ID=00986@@',
+          '# 慢性心不全（9/20往診時に下腿浮腫増悪）',
+          '内容：フロセミド20mgから40mgへ増量後、体重2kg減少。本日下腿浮腫は軽度、SpO2 96%、労作時呼吸困難なし。',
+          '方針：増量後の腎機能・電解質確認のため次回採血予定。2日で1.5kg以上の体重増加あれば訪問看護より連絡を受け、利尿薬追加を検討。',
           '',
-          '# 高血圧',
-          '内容：本日血圧 142/88。内服は継続できている。',
-          '方針：現行処方を継続し、次回訪問時に再測定。',
+          '# 嚥下機能低下',
+          '内容：食事中のむせ込み増加を妻様より報告。本日水分でむせあり、固形物は摂取可。',
+          '方針：水分はとろみ付きで提供、食後30分座位保持を指導。言語聴覚士による嚥下評価を【導入／経過観察】で検討。',
           '',
-          '（これはMOCKモードのサンプルです。実際の音声は解析していません）',
-        ].join('\n'),
-      });
+          'これはMOCKモードのサンプルです。実際の音声は解析していません。',
+        ].join('\n'));
+      return res.json({ note, spoken });
     }
-    if (!genAI) return res.status(500).json({ error: 'GEMINI_API_KEY が未設定です' });
+    if (!ai) return res.status(500).json({ error: 'AIの設定が未完了です（VERTEX_PROJECT を確認してください）' });
     const { audio, mimeType } = req.body || {};
     if (!audio || !mimeType) return res.status(400).json({ error: 'audio（Base64）と mimeType は必須です' });
 
-    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-    const result = await model.generateContent([
-      { text: FORMAT_PROMPT },
-      { inlineData: { mimeType, data: audio } },
-    ]);
-    const note = (result.response.text() || '').trim();
+    const result = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: FORMAT_PROMPT },
+          { inlineData: { mimeType, data: audio } },
+        ],
+      }],
+      config: { maxOutputTokens: 16384 },
+    });
+    const finish = result.candidates && result.candidates[0] && result.candidates[0].finishReason;
+    if (finish && finish !== 'STOP') console.warn(`dictate: finishReason=${finish}（出力が途中で終了した可能性）`);
+    let { note, spoken } = splitSpokenHeader(result.text || '');
+    if (finish === 'MAX_TOKENS' && note) note += '\n\n（出力が長く途中で終了しました。続きを追記してください）';
     if (!note) return res.status(502).json({ error: '整形結果が空でした。録音をやり直してください。' });
-    res.json({ note });
+    if (spoken) console.log(`dictate: spoken clinic=${spoken.clinicId || '(未照合)'} idLen=${spoken.orcaId.length}`); // 値そのものは残さない
+    res.json({ note, spoken });
   } catch (e) {
     console.error('dictate error:', e.message || e); // 本文は記録しない
     res.status(500).json({ error: '整形に失敗しました', detail: String(e.message || e) });
@@ -223,6 +350,31 @@ app.post('/api/dictate', authenticate, async (req, res) => {
 });
 
 // ---- MOVACAL 書き込み（メモ / カルテ本文 を選択） ----
+// 患者の本人確認（取り違え防止）。氏名・年齢・性別のみ返す。
+app.post('/api/patient', authenticate, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const orcaId = normalizeId(b.orcaId);
+    if (!orcaId) return res.status(400).json({ error: '患者IDが空です' });
+    let clinicId, clinicCode;
+    if (b.clinicId) {
+      const c = clinicById(b.clinicId);
+      if (!c) return res.status(400).json({ error: '未登録の診療所です' });
+      clinicId = c.id; clinicCode = c.code;
+    }
+    if (MOCK) {
+      await new Promise((r) => setTimeout(r, 300));
+      if (orcaId === '9998') return res.json({ found: false });
+      return res.json({ found: true, orcaId, name: '見本 花子', kana: 'ミホン ハナコ', gender: '女性', age: 88, status: 'ACTIVE' });
+    }
+    const r = await movacal.getPatient({ orcaId, clinicId, clinicCode });
+    res.json(r.found ? r : { found: false });
+  } catch (e) {
+    console.error('patient lookup error:', e.message || e);
+    res.status(502).json({ error: '患者情報を確認できませんでした', detail: String(e.message || e) });
+  }
+});
+
 app.post('/api/register', authenticate, async (req, res) => {
   try {
     const b = req.body || {};
@@ -317,7 +469,7 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.listen(PORT, () => console.log(`movacal-voice-karte v2 on :${PORT} (${MOCK ? 'MOCK' : 'live'}, model=${GEMINI_MODEL}, auth=${oauthClient ? 'google' : (APP_TOKEN_ENABLED ? 'token' : 'open')})`));
+app.listen(PORT, () => console.log(`movacal-voice-karte v2 on :${PORT} (${MOCK ? 'MOCK' : 'live'}, ai=${MOCK ? 'mock' : aiBackend}, model=${GEMINI_MODEL}, auth=${oauthClient ? 'google' : (APP_TOKEN_ENABLED ? 'token' : 'open')})`));
 
 function jstNow() {
   const d = new Date(Date.now() + 9 * 3600 * 1000);

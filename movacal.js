@@ -280,4 +280,50 @@ async function appendToKarte(p) {
   return { appended: true, org_karte_id: target.org_karte_id };
 }
 
-module.exports = { getCredential, registerObjective, registerMemo, getUserData, getValidUserId, getDiagData, appendToKarte, insertAfterAP };
+/**
+ * 患者情報の取得（取り違え防止の本人確認用）。
+ * 画面に出すのに必要な最小限（氏名・カナ・性別・年齢・状態）だけを返す。保険情報等は返さない。
+ * 該当なしは { found:false }。通信や認証の失敗は例外。
+ */
+async function getPatient(p) {
+  if (!p.orcaId) throw new Error('orcaId は必須です');
+  const credential = await getCredential();
+  const body = {
+    credential,
+    clinic_info: clinicInfo(p.clinicId, p.clinicCode),
+    patient_get_info: { orca_id: String(p.orcaId) },
+  };
+  const res = await fetch(`${MOVACAL_BASE}/service/api/v1/getPatient.php`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
+  });
+  if (res.status === 204 || res.status === 404) return { found: false };
+  const text = await res.text();
+  if (res.status === 400) return { found: false, reason: text.slice(0, 200) }; // 不正なID等
+  if (!res.ok) throw new Error(`getPatient.php ${res.status}: ${text.slice(0, 200)}`);
+  if (!text || !text.trim()) return { found: false };
+  let json; try { json = JSON.parse(text); } catch { throw new Error('getPatient.php 応答が不正'); }
+  let pi = json.patient_info !== undefined ? json.patient_info : json;
+  if (Array.isArray(pi)) pi = pi[0];
+  if (!pi || !(pi.family_name || pi.first_name || pi.orca_id)) return { found: false };
+
+  let age = null;
+  if (pi.birthday && /^\d{4}-\d{2}-\d{2}/.test(pi.birthday)) {
+    const b = new Date(pi.birthday + 'T00:00:00+09:00');
+    const n = new Date(Date.now() + 9 * 3600 * 1000); // JST
+    age = n.getUTCFullYear() - b.getUTCFullYear();
+    const md = (n.getUTCMonth() + 1) * 100 + n.getUTCDate();
+    const bmd = (b.getUTCMonth() + 1) * 100 + b.getUTCDate();
+    if (md < bmd) age -= 1;
+  }
+  return {
+    found: true,
+    orcaId: String(pi.orca_id || p.orcaId),
+    name: `${pi.family_name || ''} ${pi.first_name || ''}`.trim(),
+    kana: `${pi.family_name_kana || ''} ${pi.first_name_kana || ''}`.trim(),
+    gender: pi.gender === 'MALE' ? '男性' : (pi.gender === 'FEMALE' ? '女性' : ''),
+    age,
+    status: pi.status || '',
+  };
+}
+
+module.exports = { getCredential, registerObjective, registerMemo, getUserData, getValidUserId, getDiagData, appendToKarte, insertAfterAP, getPatient };
