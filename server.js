@@ -49,24 +49,13 @@ function normalizeId(v) {
     .replace(/[^0-9A-Za-z_]/g, '');
 }
 
-// AI出力の1行目「@@CLINIC=..|ID=..@@」を取り出し、本文から除く。
-function splitSpokenHeader(raw) {
-  const text = String(raw || '');
-  const re = /@@\s*CLINIC\s*=([^|@\n]*)\|\s*ID\s*=([^@\n]*)@@[ \t]*\r?\n?/;
-  const m = re.exec(text);
-  if (!m) return { note: text.trim(), spoken: null };
-  const note = (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim();
-  const clinicText = m[1].trim();
-  const orcaId = normalizeId(m[2]);
+// 読み取った診療所名・IDをレジストリと照合して返す。何も無ければ null。
+function buildSpoken(clinicRaw, idRaw) {
+  const clinicText = String(clinicRaw || '').trim();
+  const orcaId = normalizeId(idRaw);
+  if (!clinicText && !orcaId) return null;
   const hit = clinicText ? matchClinic(clinicText) : null;
-  return {
-    note,
-    spoken: (clinicText || orcaId) ? {
-      clinicText, orcaId,
-      clinicId: hit ? String(hit.id) : '',
-      clinicName: hit ? hit.name : '',
-    } : null,
-  };
+  return { clinicText, orcaId, clinicId: hit ? String(hit.id) : '', clinicName: hit ? hit.name : '' };
 }
 function clinicChoices() { return CLINICS.map((c) => ({ id: String(c.id), name: c.name })); }
 loadClinics();
@@ -148,24 +137,21 @@ if (!oauthClient && !APP_TOKEN_ENABLED && !MOCK) console.warn('⚠️  認証が
 if (APP_TOKEN_ENABLED) console.warn('⚠️  共有トークン(APP_TOKEN)が有効です。本番では無効化推奨。');
 
 // ---- 整形プロンプト（プロブレムリスト形式） ----
+// 患者特定専用（整形とは別の呼び出し。整形の精度に影響させないため分離）
+const PATIENT_PROMPT = `これは医師の口述音声です。冒頭で述べられた診療所名と患者IDだけを抜き出してください。
+- 診療所名は口述された呼び方のまま（例：仙台北、日吉、あゆみ仙台）。法人名は付けない。
+- 患者IDは口述された英数字を一字ずつそのまま。先頭の0も残す（「ゼロゼロキュウハチロク」は00986）。桁を補ったり削ったりしない。
+- 述べられていなければ空文字にする。推測しない。`;
+
 const FORMAT_PROMPT = `あなたは在宅診療に精通した医師の診療録作成を補助するアシスタントです。
 これは医師が診察内容を口述した音声です。文字起こしし、下記の記載例と同じ書式・文体・水準の診療録に整形してください。
-
-【冒頭の患者特定】
-- 医師は口述の冒頭で「仙台北の、ID 00986の患者です」のように、診療所名と患者IDを述べることがある。
-- 出力の1行目には必ず、次の形式の行を1行だけ出す：@@CLINIC=診療所名|ID=患者ID@@
-  例：@@CLINIC=仙台北|ID=00986@@
-- 述べられていない項目は空にする（例：@@CLINIC=|ID=@@、@@CLINIC=日吉|ID=@@）。
-- 診療所名は口述された呼び方のまま書く（例：仙台北、日吉、あゆみ仙台、武蔵小杉）。「やまと在宅診療所」などの法人名は付けない。
-- 患者IDは口述された英数字を一字ずつそのまま書く。先頭の0も残す（「ゼロゼロキュウハチロク」は00986）。桁を補ったり削ったりしない。区切りの空白やハイフンは除く。
-- 診療所名・患者ID・「〜の患者です」といった患者特定のための発言は、2行目以降の本文には含めない。
 
 【書式】
 - 問題ごとに、1行目を半角の「# 」で始めて見出しを書く。
 - 2行目を「内容：」で始め、経過、本日の所見、現在の状態を1段落で書く。
 - 3行目を「方針：」で始め、評価と方針を1段落で書く。口述に方針がなければ「方針：」の行は書かない。
 - 問題と問題の間は1行空ける。
-- 日付行や前置きは付けない。本文は2行目（患者特定の行の次）から「# 」で始める。
+- 日付行や前置きは付けない。1行目から「# 」で始める。
 
 【見出しの立て方】
 - 関連する病名は「、」で並べて一つの見出しにまとめる（例：# 骨粗鬆症、腰椎圧迫骨折）。
@@ -204,6 +190,7 @@ const FORMAT_PROMPT = `あなたは在宅診療に精通した医師の診療録
 - 音声が不明瞭で語を特定できない場合、または薬剤名、用量、数値が複数に解釈できる場合に限り、その箇所に【要確認】と記す。医学的文脈から一意に定まる語は要確認にしない。
 - 口述されていない事実、所見、検査値、評価、方針を創作しない。口述された内容は要約しすぎず、数値、日付、用量、部位を省略しない。
 - 口語のフィラーや言い直しは整理する。意味は変えない。
+- 口述冒頭の「仙台北の、ID 00986の患者です」のような、診療所名や患者IDを述べる発言は本文に含めない。
 
 【記載例】
 以下は書式と文体を示すための例である。書式と文体だけを参考にし、薬剤名や予定などの内容は流用しないこと。口述にない内容を書き加えてはならない。
@@ -216,7 +203,7 @@ const FORMAT_PROMPT = `あなたは在宅診療に精通した医師の診療録
 内容：ボルタレン坐薬は1日1回程度（早朝6時頃）、カロナール3錠分3で、坐薬使用後NRS2〜3。疼痛は改善傾向。
 方針：使用頻度の減少に合わせ、ボルタレン坐薬を【1日1回定期＋疼痛時／疼痛時のみ】へ減量。NSAIDs使用期間が長くなっているため、胃薬の併用を確認し、次回採血で腎機能・貧血を確認する。
 
-出力は、1行目の患者特定の行と、2行目以降の「# 」で始まる診療録本文のみ。`;
+出力は「# 」で始まる診療録本文のみ。`;
 
 // ---- セキュリティヘッダ ----
 app.use((req, res, next) => {
@@ -307,8 +294,8 @@ app.post('/api/dictate', authenticate, async (req, res) => {
     if (MOCK) {
       // Gemini を呼ばずにサンプルを返す（APIキー不要・課金なし）
       await new Promise((r) => setTimeout(r, 800)); // 生成待ちの体感を再現
-      const { note, spoken } = splitSpokenHeader([
-          '@@CLINIC=仙台北|ID=00986@@',
+      const spoken = buildSpoken('仙台北', '00986');
+      const note = ([
           '# 慢性心不全（9/20往診時に下腿浮腫増悪）',
           '内容：フロセミド20mgから40mgへ増量後、体重2kg減少。本日下腿浮腫は軽度、SpO2 96%、労作時呼吸困難なし。',
           '方針：増量後の腎機能・電解質確認のため次回採血予定。2日で1.5kg以上の体重増加あれば訪問看護より連絡を受け、利尿薬追加を検討。',
@@ -318,29 +305,50 @@ app.post('/api/dictate', authenticate, async (req, res) => {
           '方針：水分はとろみ付きで提供、食後30分座位保持を指導。言語聴覚士による嚥下評価を【導入／経過観察】で検討。',
           '',
           'これはMOCKモードのサンプルです。実際の音声は解析していません。',
-        ].join('\n'));
+        ].join('\n')).trim();
       return res.json({ note, spoken });
     }
     if (!ai) return res.status(500).json({ error: 'AIの設定が未完了です（VERTEX_PROJECT を確認してください）' });
     const { audio, mimeType } = req.body || {};
     if (!audio || !mimeType) return res.status(400).json({ error: 'audio（Base64）と mimeType は必須です' });
 
-    const result = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: [{
-        role: 'user',
-        parts: [
-          { text: FORMAT_PROMPT },
-          { inlineData: { mimeType, data: audio } },
-        ],
-      }],
-      config: { maxOutputTokens: 16384 },
-    });
+    const audioPart = { inlineData: { mimeType, data: audio } };
+    const [fmt, pid] = await Promise.allSettled([
+      ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [{ role: 'user', parts: [{ text: FORMAT_PROMPT }, audioPart] }],
+        config: { maxOutputTokens: 16384 },
+      }),
+      ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [{ role: 'user', parts: [{ text: PATIENT_PROMPT }, audioPart] }],
+        config: {
+          temperature: 0,
+          maxOutputTokens: 256,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: { clinic: { type: 'STRING' }, patient_id: { type: 'STRING' } },
+            required: ['clinic', 'patient_id'],
+          },
+        },
+      }),
+    ]);
+    if (fmt.status !== 'fulfilled') throw fmt.reason;
+    const result = fmt.value;
     const finish = result.candidates && result.candidates[0] && result.candidates[0].finishReason;
     if (finish && finish !== 'STOP') console.warn(`dictate: finishReason=${finish}（出力が途中で終了した可能性）`);
-    let { note, spoken } = splitSpokenHeader(result.text || '');
+    let note = (result.text || '').trim();
     if (finish === 'MAX_TOKENS' && note) note += '\n\n（出力が長く途中で終了しました。続きを追記してください）';
     if (!note) return res.status(502).json({ error: '整形結果が空でした。録音をやり直してください。' });
+
+    let spoken = null;
+    if (pid.status === 'fulfilled') {
+      try { const j = JSON.parse(pid.value.text || '{}'); spoken = buildSpoken(j.clinic, j.patient_id); }
+      catch { console.warn('dictate: 患者特定の応答を解析できませんでした'); }
+    } else {
+      console.warn('dictate: 患者特定に失敗:', pid.reason && (pid.reason.message || pid.reason));
+    }
     if (spoken) console.log(`dictate: spoken clinic=${spoken.clinicId || '(未照合)'} idLen=${spoken.orcaId.length}`); // 値そのものは残さない
     res.json({ note, spoken });
   } catch (e) {
