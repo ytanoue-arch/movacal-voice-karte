@@ -143,6 +143,22 @@ if (AUTH_MODE === 'open' && !MOCK) console.warn('⚠️  ALLOW_OPEN=1：認証�
 
 // ---- 整形プロンプト（プロブレムリスト形式） ----
 // 患者特定専用（整形とは別の呼び出し。整形の精度に影響させないため分離）
+// 患者特定の応答を寛容に解釈する（```json 囲み・前後の余分な文字・末尾の切れに対応）
+function parsePatientJson(raw) {
+  const s = String(raw || '').replace(/```(?:json)?/gi, '').trim();
+  if (!s) return null;
+  const tryParse = (t) => { try { const o = JSON.parse(t); return o && typeof o === 'object' ? o : null; } catch { return null; } };
+  let o = tryParse(s);
+  if (!o) { const m = s.match(/\{[\s\S]*\}/); if (m) o = tryParse(m[0]); }
+  if (!o) {
+    const c = s.match(/"clinic"\s*:\s*"([^"]*)"/);
+    const p = s.match(/"patient_id"\s*:\s*"([^"]*)"/);
+    if (c || p) o = { clinic: c ? c[1] : '', patient_id: p ? p[1] : '' };
+  }
+  if (!o) return null;
+  return { clinic: String(o.clinic || ''), patient_id: String(o.patient_id || '') };
+}
+
 const PATIENT_PROMPT = `これは医師の口述音声です。冒頭で述べられた診療所名と患者IDだけを抜き出してください。
 - 診療所名は口述された呼び方のまま（例：仙台北、日吉、あゆみ仙台）。法人名は付けない。
 - 患者IDは口述された英数字を一字ずつそのまま。先頭の0も残す（「ゼロゼロキュウハチロク」は00986）。桁を補ったり削ったりしない。
@@ -335,7 +351,8 @@ app.post('/api/dictate', authenticate, async (req, res) => {
         contents: [{ role: 'user', parts: [{ text: PATIENT_PROMPT }, audioPart] }],
         config: {
           temperature: 0,
-          maxOutputTokens: 256,
+          // 思考トークンも上限に数えられるため余裕を持たせる（256では途中で切れてJSONが壊れた）
+          maxOutputTokens: 4096,
           responseMimeType: 'application/json',
           responseSchema: {
             type: 'OBJECT',
@@ -355,8 +372,13 @@ app.post('/api/dictate', authenticate, async (req, res) => {
 
     let spoken = null;
     if (pid.status === 'fulfilled') {
-      try { const j = JSON.parse(pid.value.text || '{}'); spoken = buildSpoken(j.clinic, j.patient_id); }
-      catch { console.warn('dictate: 患者特定の応答を解析できませんでした'); }
+      const raw = pid.value.text || '';
+      const j = parsePatientJson(raw);
+      if (j) spoken = buildSpoken(j.clinic, j.patient_id);
+      else {
+        const pf = pid.value.candidates && pid.value.candidates[0] && pid.value.candidates[0].finishReason;
+        console.warn(`dictate: 患者特定の応答を解析できませんでした finishReason=${pf} len=${raw.length}`); // 値そのものは残さない
+      }
     } else {
       console.warn('dictate: 患者特定に失敗:', pid.reason && (pid.reason.message || pid.reason));
     }
