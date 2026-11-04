@@ -4,7 +4,8 @@
 
 - 本番URL: https://movacal-voice-karte-fllm266yfa-an.a.run.app
 - 配置先: Google Cloud Run（プロジェクト `movacal-shuunou` / リージョン `asia-northeast1`）
-- 認証: Google Workspace（`@yamato-clinic.org` のみ）
+- 認証: Google Workspace（`@yamato-clinic.org` のみ）。共有トークン方式は廃止済み
+- 監査ログ: 拒否したログイン（メール・理由）、患者照会（誰が・どの院の・どのID）、整形・登録（誰が）をCloud Loggingに記録。氏名・本文は残さない
 - AI: Vertex AI（東京リージョン、APIキー不要。Cloud Run のサービスアカウントで認証）
 
 ## 構成
@@ -55,6 +56,7 @@ MOCKモードでの挙動:
 ⚠️ `bash deploy.sh` は**使わないでください**（環境変数が消えます）。
 
 ```bash
+cd ~/Desktop/movacal-voice-karte      # ← 必ずこのフォルダで実行（ls で Dockerfile と server.js を確認）
 gcloud run deploy movacal-voice-karte \
   --project movacal-shuunou \
   --source . \
@@ -62,7 +64,16 @@ gcloud run deploy movacal-voice-karte \
   --allow-unauthenticated
 ```
 
-`--project` は必須です（省略すると別プロジェクトに新しいサービスが作られます）。
+- 途中に **「Building using Dockerfile」** と出ることを確認。「Buildpacks」と出たら別フォルダから実行しています（中断してフォルダを確認）
+- `--project` は必須です（省略すると別プロジェクトに新しいサービスが作られます）
+
+**デプロイ後の確認（毎回）** — IAP が外れていないこと:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://movacal-voice-karte-fllm266yfa-an.a.run.app/api/config
+# 302 ならOK（IAPがログインへ誘導）。200 なら誰でも開ける状態 → すぐ確認
+```
+
 環境変数のフラグを付けなければ既存の設定は保持されます。個別に変えるときは:
 
 ```bash
@@ -79,7 +90,9 @@ gcloud run services update movacal-voice-karte \
 | `VERTEX_LOCATION` | Vertex AI のリージョン（既定 `asia-northeast1`＝東京） |
 | `GEMINI_MODEL` | 整形に使うモデル（既定 `gemini-2.5-flash`） |
 | `USE_VERTEX` / `GEMINI_API_KEY` | 緊急用。`USE_VERTEX=0` のときだけAPIキー方式で動く |
-| `GOOGLE_CLIENT_ID` / `ALLOWED_HD` | Googleサインインと許可ドメイン |
+| `GOOGLE_CLIENT_ID` / `ALLOWED_HD` | Googleサインインと許可ドメイン。どちらかが無いとアプリは停止する（誰でも使える状態にはならない） |
+| `ALLOWED_EMAILS` | 許可する利用者（任意）。IAP＋Googleグループで管理する場合は不要 |
+| `ACCESS_REQUEST_URL` | 利用申請フォームのURL。サインイン画面・権限なし画面に「新規登録」として表示 |
 | `MOVACAL_PROVIDER` / `MOVACAL_PASSWORD` / `MOVACAL_PRIVATE_KEY` | MOVACAL認証 |
 | `MOVACAL_BASIC_AUTH_USER` / `_PASS` | MOVACALのBasic認証（全院共通） |
 | `CLINICS_JSON` / `USER_CLINICS_JSON` | 診療所レジストリ（本番はこちらが優先） |

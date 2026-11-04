@@ -121,3 +121,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .pt-conflict p { margin: 0 0 8px; font-size: 13px; color: #7a4b00; }
 .pt-choices { display: flex; flex-direction: column; gap: 8px; }
 .pt-choices .btn { min-height: 44px; font-size: 14px; text-align: left; justify-content: flex-start; }
+
+/* 利用申請の案内 */
+.request-box { margin-top: 16px; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 14px; background: #fbfdfd; }
+.request-title { margin: 0 0 4px; font-size: 13px; font-weight: 700; color: var(--ink-soft); }
+.request-text { margin: 0 0 10px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+.request-box .btn { display: flex; align-items: center; justify-content: center; text-decoration: none; }
+.auth-note.err { color: var(--rec); font-weight: 600; }

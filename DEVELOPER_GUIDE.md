@@ -272,7 +272,8 @@ Node.jsのバージョンが古いと警告が出ます（v20以上推奨）。
 口述の冒頭で「仙台北の、ID 00986の患者です」と話すと、診療所と患者IDが自動で入ります。
 
 **仕組み**
-- AIは出力の1行目に `@@CLINIC=仙台北|ID=00986@@` を出し、サーバー（`splitSpokenHeader`）がこれを取り出して本文から除きます
+- 診療所名と患者IDの抽出は、本文整形（`FORMAT_PROMPT`）とは**別のAI呼び出し**（`server.js` の `PATIENT_PROMPT`、JSON固定出力）で並列に行います。本文整形に患者特定の指示を混ぜると文章の質が落ちたため、分離しています
+- 冒頭の「○○の、ID○○の患者です」という発言は `FORMAT_PROMPT` 側の指示で本文から除いています
 - 診療所名は `matchClinic` でレジストリと照合します。「仙台」のように複数該当する場合は推測せず、選択を促します
 - IDは全角→半角、空白・ハイフン除去のみ。**先頭の0は保持**し、桁の補完はしません
 - 画面側は `/api/patient`（`getPatient.php`）で照会し、氏名・年齢・性別だけを表示します（保険情報などは返しません）
@@ -288,3 +289,19 @@ Node.jsのバージョンが古いと警告が出ます（v20以上推奨）。
 - IDに `9998` を入れると「患者が見つかりません」を確認できます
 
 この部分は患者の取り違えに直結するため、変更する場合は必ず相談してください。
+
+
+## 付録：利用者の管理と申請フロー
+
+- 利用者の名簿は Google グループ `voice-karte-users@yamato-clinic.org` で管理します（Cloud Run の IAP がこのグループを参照）
+- 申請は Google フォーム（https://forms.gle/jAkTQJJX6EBzi3m86）。やまとのアカウントのみ回答可、メールは確認済みアドレスを自動収集、回答は「音声カルテ 利用申請（台帳）」スプレッドシートに蓄積
+- 未登録の人がアプリのURLを開くと、IAP の拒否画面の代わりにこのフォームへ自動で移ります（IAP の accessDeniedPageUri 設定）
+- アプリ内にも、環境変数 `ACCESS_REQUEST_URL` により「新規登録（利用申請フォーム）」ボタンが出ます
+- 申請が届くと通知メールが届きます（Apps Script「音声カルテ 利用申請フォーム作成」の `notifyDxTeam`。宛先は `DX_NOTIFY_EMAIL`）
+- 承認は DX チームがグループにメールアドレスを追加するだけ（反映まで数分〜1時間）。退職・異動はグループから外す
+- 緊急時に IAP を外す: `gcloud run services update movacal-voice-karte --project movacal-shuunou --region asia-northeast1 --no-iap`（外すとアプリ内サインインのみの防御になる）
+- 利用者ごとの診療所制限は設けていません（全利用者が全院を扱えます）
+- ログの見方：`gcloud run services logs read ... | grep "audit "`
+  - `audit auth-denied` … 拒否したログイン（reason: domain=社外アカウント / not-allowed=未許可 / unverified）
+  - `audit patient-lookup` … 患者照会（by=誰が clinic=院 orca=ID found=存在したか）
+  - `audit dictate` / `register:` … 整形・登録を行った人

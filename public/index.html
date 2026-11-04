@@ -30,14 +30,12 @@
     <section id="authCard" class="card auth-card" hidden>
       <h2 class="card-title">サインイン</h2>
       <div id="gsiButton"></div>
-      <div id="tokenAuth" hidden>
-        <label class="field">
-          <span>アクセストークン</span>
-          <input type="password" id="appToken" placeholder="APP_TOKEN" autocapitalize="off" autocorrect="off" />
-        </label>
-        <button id="tokenSignin" class="btn btn-primary">サインイン</button>
-      </div>
       <p class="auth-note" id="authNote"></p>
+      <div id="requestBox" class="request-box" hidden>
+        <p class="request-title">はじめて使う方へ</p>
+        <p class="request-text">利用にはDXチームの承認が必要です。下のフォームから申請してください。承認後、職場のGoogleアカウントでサインインできます。</p>
+        <a id="requestLink" class="btn btn-ghost btn-block" href="#" target="_blank" rel="noopener">新規登録（利用申請フォーム）</a>
+      </div>
     </section>
 
     <!-- アプリ本体 -->

@@ -86,15 +86,19 @@ app.use(express.json({ limit: '30mb' }));
 const PORT = process.env.PORT || 8080;
 
 // ---- 認証設定 ----
-const APP_TOKEN = process.env.APP_TOKEN; // 共有トークン（既定では無効）
-// 共有トークンによるログイン回避は既定で無効。緊急時のみ APP_TOKEN_ENABLED=1 で有効化する。
-const APP_TOKEN_ENABLED = process.env.APP_TOKEN_ENABLED === '1' && !!APP_TOKEN;
+// 共有トークン(APP_TOKEN)によるログインは廃止。認証は Google Workspace のみ。
+// 利用申請フォーム（Googleフォーム等）のURL。設定するとサインイン画面と権限なし画面に案内が出る。
+const ACCESS_REQUEST_URL = process.env.ACCESS_REQUEST_URL || '';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID; // Google Workspace サインイン用
 const ALLOWED_HD = (process.env.ALLOWED_HD || '')
   .split(',').map((s) => s.trim()).filter(Boolean); // 許可する Workspace ドメイン（hd）
 const ALLOWED_EMAILS = (process.env.ALLOWED_EMAILS || '')
   .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean); // 任意のメール許可リスト
 const oauthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+// 認証なしで動かしてよいのは開発時だけ（MOCK=1 か、明示的に ALLOW_OPEN=1）。
+// 本番で GOOGLE_CLIENT_ID 等の設定が消えた場合は「誰でも使える」にはせず、停止する（fail-closed）。
+const OPEN_MODE = process.env.MOCK === '1' || process.env.ALLOW_OPEN === '1';
+const AUTH_MODE = oauthClient ? 'google' : (OPEN_MODE ? 'open' : 'disabled');
 
 // ---- Gemini ----
 // 開発用モックモード（MOCK=1）: MOVACAL/Gemini/Google認証を使わず、ダミー応答で画面を一通り動かせる。
@@ -133,8 +137,9 @@ if (MOCK) console.log('🧪 MOCKモードで起動します（MOVACAL/Geminiに�
 else if (aiBackend === 'vertex') console.log(`Vertex AI を使用（project=${VERTEX_PROJECT}, location=${VERTEX_LOCATION}, model=${GEMINI_MODEL}）`);
 else if (aiBackend === 'apikey') console.warn('⚠️  APIキー方式で動作しています（USE_VERTEX=0）。本番は Vertex AI 推奨');
 else console.warn('⚠️  AIが未設定です（VERTEX_PROJECT を設定してください）');
-if (!oauthClient && !APP_TOKEN_ENABLED && !MOCK) console.warn('⚠️  認証が無効です（GOOGLE_CLIENT_ID を設定してください）');
-if (APP_TOKEN_ENABLED) console.warn('⚠️  共有トークン(APP_TOKEN)が有効です。本番では無効化推奨。');
+if (AUTH_MODE === 'disabled') console.error('🛑 認証設定（GOOGLE_CLIENT_ID）が無いため、すべてのAPIを停止しています。環境変数を確認してください。');
+if (AUTH_MODE === 'google' && ALLOWED_HD.length === 0 && ALLOWED_EMAILS.length === 0) console.error('🛑 許可ドメイン（ALLOWED_HD）も許可メール（ALLOWED_EMAILS）も未設定のため、ログインを拒否しています。');
+if (AUTH_MODE === 'open' && !MOCK) console.warn('⚠️  ALLOW_OPEN=1：認証なしで動作しています（開発専用。本番では設定しないこと）');
 
 // ---- 整形プロンプト（プロブレムリスト形式） ----
 // 患者特定専用（整形とは別の呼び出し。整形の精度に影響させないため分離）
@@ -230,7 +235,9 @@ app.use((req, res, next) => {
 
 // ---- 認証ミドルウェア ----
 async function authenticate(req, res, next) {
-  const header = req.get('Authorization') || '';
+  // IAP を前段に置くと Authorization ヘッダーは IAP が自分宛てとして検証するため、
+  // アプリのトークンは X-App-Auth で受け取る（旧クライアント向けに Authorization も受け付ける）
+  const header = req.get('X-App-Auth') || req.get('Authorization') || '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
 
   // 1) Google ID トークン（JWT形式なら優先的に検証）
@@ -238,10 +245,16 @@ async function authenticate(req, res, next) {
     try {
       const ticket = await oauthClient.verifyIdToken({ idToken: bearer, audience: GOOGLE_CLIENT_ID });
       const p = ticket.getPayload();
+      if (ALLOWED_HD.length === 0 && ALLOWED_EMAILS.length === 0) {
+        // 許可範囲が未設定なら、どのGoogleアカウントも通さない（設定消失時の安全側）
+        return res.status(503).json({ error: '利用許可の設定が見つからないため停止しています。管理者に連絡してください。' });
+      }
       const hdOk = ALLOWED_HD.length === 0 || (p.hd && ALLOWED_HD.includes(p.hd));
       const emailOk = ALLOWED_EMAILS.length === 0 || ALLOWED_EMAILS.includes((p.email || '').toLowerCase());
       if (!p.email_verified || !hdOk || !emailOk) {
-        return res.status(403).json({ error: 'このアカウントは許可されていません' });
+        const reason = !p.email_verified ? 'unverified' : (!hdOk ? 'domain' : 'not-allowed');
+        console.warn(`audit auth-denied: email=${p.email || '-'} hd=${p.hd || '-'} reason=${reason} path=${req.path}`);
+        return res.status(403).json({ error: 'このアカウントには利用権限がありません', denied: true });
       }
       req.user = { email: p.email, name: p.name || p.email, hd: p.hd };
       return next();
@@ -251,29 +264,26 @@ async function authenticate(req, res, next) {
     }
   }
 
-  // 2) 共有トークン（既定で無効。緊急時に APP_TOKEN_ENABLED=1 の時のみ有効）
-  if (APP_TOKEN_ENABLED) {
-    const token = bearer || req.get('X-App-Token') || '';
-    if (token && token === APP_TOKEN) {
-      req.user = { email: 'shared-token', name: process.env.MOVACAL_REGISTRANT_NAME || process.env.MOVACAL_USER_NAME || 'AI音声カルテ' };
-      return next();
-    }
-  }
-
-  // 3) 認証未設定（ローカル開発のみ）
-  if (!oauthClient && !APP_TOKEN_ENABLED) {
+  // 2) 認証なし（開発時のみ：MOCK=1 または ALLOW_OPEN=1）
+  if (AUTH_MODE === 'open') {
     req.user = { email: 'anon', name: process.env.MOVACAL_USER_NAME || 'AI音声カルテ' };
     return next();
   }
 
-  // 4) それ以外はサインイン必須（共有トークン無効化済み）
+  // 3) 認証設定が無い本番は停止
+  if (AUTH_MODE === 'disabled') {
+    return res.status(503).json({ error: '認証設定が見つからないため停止しています。管理者に連絡してください。' });
+  }
+
+  // 4) それ以外はサインイン必須
   return res.status(401).json({ error: oauthClient ? 'Googleサインインが必要です' : '認証が必要です' });
 }
 
 // ---- フロント設定（認証方式をクライアントへ通知） ----
 app.get('/api/config', (req, res) => {
   res.json({
-    auth: oauthClient ? 'google' : (APP_TOKEN_ENABLED ? 'token' : 'open'),
+    auth: AUTH_MODE,
+    accessRequestUrl: ACCESS_REQUEST_URL,
     googleClientId: GOOGLE_CLIENT_ID || '',
     allowedHd: ALLOWED_HD,
     clinicSelector: process.env.CLINIC_SELECTOR !== '0',
@@ -312,6 +322,7 @@ app.post('/api/dictate', authenticate, async (req, res) => {
     const { audio, mimeType } = req.body || {};
     if (!audio || !mimeType) return res.status(400).json({ error: 'audio（Base64）と mimeType は必須です' });
 
+    console.log(`audit dictate: by=${req.user && req.user.email} bytes=${audio.length}`);
     const audioPart = { inlineData: { mimeType, data: audio } };
     const [fmt, pid] = await Promise.allSettled([
       ai.models.generateContent({
@@ -372,10 +383,12 @@ app.post('/api/patient', authenticate, async (req, res) => {
     }
     if (MOCK) {
       await new Promise((r) => setTimeout(r, 300));
+      console.log(`audit patient-lookup: by=${req.user && req.user.email} clinic=${clinicId || '-'} orca=${orcaId} found=${orcaId !== '9998'} (mock)`);
       if (orcaId === '9998') return res.json({ found: false });
       return res.json({ found: true, orcaId, name: '見本 花子', kana: 'ミホン ハナコ', gender: '女性', age: 88, status: 'ACTIVE' });
     }
     const r = await movacal.getPatient({ orcaId, clinicId, clinicCode });
+    console.log(`audit patient-lookup: by=${req.user && req.user.email} clinic=${clinicId || '-'} orca=${orcaId} found=${!!r.found}`);
     res.json(r.found ? r : { found: false });
   } catch (e) {
     console.error('patient lookup error:', e.message || e);
@@ -477,7 +490,7 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.listen(PORT, () => console.log(`movacal-voice-karte v2 on :${PORT} (${MOCK ? 'MOCK' : 'live'}, ai=${MOCK ? 'mock' : aiBackend}, model=${GEMINI_MODEL}, auth=${oauthClient ? 'google' : (APP_TOKEN_ENABLED ? 'token' : 'open')})`));
+app.listen(PORT, () => console.log(`movacal-voice-karte v2 on :${PORT} (${MOCK ? 'MOCK' : 'live'}, ai=${MOCK ? 'mock' : aiBackend}, model=${GEMINI_MODEL}, auth=${AUTH_MODE})`));
 
 function jstNow() {
   const d = new Date(Date.now() + 9 * 3600 * 1000);

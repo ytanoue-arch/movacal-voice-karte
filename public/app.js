@@ -3,8 +3,8 @@
 const $ = (id) => document.getElementById(id);
 const el = {
   who: $('who'),
-  authCard: $('authCard'), gsiButton: $('gsiButton'), tokenAuth: $('tokenAuth'),
-  appToken: $('appToken'), tokenSignin: $('tokenSignin'), authNote: $('authNote'),
+  authCard: $('authCard'), gsiButton: $('gsiButton'), authNote: $('authNote'),
+  requestBox: $('requestBox'), requestLink: $('requestLink'),
   appBody: $('appBody'),
   orcaId: $('orcaId'), idHint: $('idHint'),
   clinic: $('clinic'), clinicField: $('clinicField'),
@@ -21,6 +21,7 @@ const MAX_MS = 10 * 60 * 1000;
 
 let authMode = 'open';
 let googleClientId = '';
+let accessRequestUrl = '';  // 利用申請フォーム（設定があるときだけ案内を出す）
 let authToken = '';        // Google ID トークン または 共有トークン（メモリ保持）
 let currentUser = '';
 let target = 'karte';
@@ -62,12 +63,15 @@ async function init() {
   try {
     const cfg = await (await fetch('/api/config')).json();
     authMode = cfg.auth; googleClientId = cfg.googleClientId || '';
+    accessRequestUrl = cfg.accessRequestUrl || '';
     clinicSelectorOn = !!cfg.clinicSelector;
-  } catch { authMode = 'open'; }
+  } catch { authMode = 'error'; }
 
   if (authMode === 'google') { if (!restoreGoogleSession()) setupGoogle(); }
-  else if (authMode === 'token') { if (!restoreTokenSession()) setupToken(); }
-  else showApp(); // open（ローカル開発）
+  else if (authMode === 'open') showApp(); // 開発時のみ（MOCK / ALLOW_OPEN）
+  else showStopped(authMode === 'disabled'
+    ? 'サーバーの認証設定が見つからないため、安全のため停止しています。管理者（DXチーム）に連絡してください。'
+    : 'サーバーに接続できませんでした。通信状況を確認して、再読み込みしてください。');
 }
 
 // ---------- 認証: Google Workspace ----------
@@ -78,10 +82,11 @@ function gsiLoaded() { return !!(window.google && google.accounts && google.acco
 function setupGoogle() {
   el.authCard.hidden = false;
   el.appBody.hidden = true;
-  el.tokenAuth.hidden = true;
   el.gsiButton.hidden = false;
   el.gsiButton.innerHTML = '';
-  el.authNote.textContent = '職場の Google Workspace アカウントでサインインしてください。許可されたドメインのみ利用できます。';
+  el.authNote.className = 'auth-note';
+  el.authNote.textContent = '職場の Google Workspace アカウントでサインインしてください。許可された利用者のみ使えます。';
+  showRequestBox();
   if (gsiLoaded()) { renderGoogle(); return; }
   // ライブラリ未ロード：公式フック + 保険のポーリング（順序の取りこぼし防止）
   pendingGoogle = true;
@@ -114,11 +119,7 @@ function onGoogleCredential(resp) {
   showApp();
 }
 function reauth() {
-  if (authMode === 'google') {
-    clearSession('mvk_gtoken'); authToken = ''; setupGoogle();
-  } else if (authMode === 'token') {
-    authToken = ''; showAuth();
-  }
+  if (authMode === 'google') { clearSession('mvk_gtoken'); authToken = ''; setupGoogle(); }
 }
 
 // ---------- セッション保持（再ログインを減らす） ----------
@@ -137,32 +138,6 @@ function restoreGoogleSession() {
   showApp();
   return true;
 }
-function restoreTokenSession() {
-  const t = readSession('mvk_token') || sessionStorage.getItem('mvk_token') || '';
-  if (!t) return false;
-  authToken = t; el.who.textContent = 'サインイン中';
-  showApp();
-  return true;
-}
-
-// ---------- 認証: 共有トークン ----------
-function setupToken() {
-  el.authCard.hidden = false;
-  el.gsiButton.hidden = true;
-  el.tokenAuth.hidden = false;
-  el.authNote.textContent = 'APP_TOKEN を入力してサインインしてください。';
-  const saved = sessionStorage.getItem('mvk_token');
-  if (saved) el.appToken.value = saved;
-}
-el.tokenSignin.addEventListener('click', () => {
-  const t = el.appToken.value.trim();
-  if (!t) return;
-  authToken = t; sessionStorage.setItem('mvk_token', t); saveSession('mvk_token', t);
-  el.who.textContent = 'サインイン中';
-  showApp();
-});
-
-function showAuth() { el.authCard.hidden = false; el.appBody.hidden = true; }
 function showApp() {
   el.authCard.hidden = true; el.appBody.hidden = false;
   if (pendingOrcaId) {
@@ -177,6 +152,7 @@ async function loadClinics() {
   if (!clinicSelectorOn) { el.clinicField.hidden = true; el.mClinic.hidden = true; verifyPatient(); return; }
   try {
     const r = await fetch('/api/clinics', { headers: authHeaders() });
+    if (r.status === 403) { showDenied(); return; }
     if (!r.ok) { verifyPatient(); return; }
     const d = await r.json();
     if (!d.clinics || !d.clinics.length) { el.clinicField.hidden = true; el.mClinic.hidden = true; verifyPatient(); return; }
@@ -206,7 +182,7 @@ async function loadClinics() {
 
 function authHeaders() {
   const h = { 'Content-Type': 'application/json' };
-  if (authToken) h['Authorization'] = 'Bearer ' + authToken;
+  if (authToken) h['X-App-Auth'] = 'Bearer ' + authToken; // Authorization は IAP が使うため避ける
   return h;
 }
 
@@ -296,6 +272,7 @@ async function sendForDictation(blob, mimeType) {
       reauth();
       return;
     }
+    if (res.status === 403) { showDenied(); return; }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `エラー ${res.status}`);
 
@@ -397,7 +374,7 @@ el.execBtn.addEventListener('click', async () => {
       }),
     });
     if (res.status === 401) { setMsg('再ログインが必要です。', 'err'); reauth(); return; }
-    if (res.status === 403) { setMsg('このアカウントは許可されていません。', 'err'); return; }
+    if (res.status === 403) { showDenied(); return; }
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `エラー ${res.status}`);
 
@@ -501,6 +478,7 @@ async function verifyPatient() {
     const r = await fetch('/api/patient', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ orcaId, clinicId }) });
     if (seq !== ptSeq) return;
     if (r.status === 401) { pt = { key, ok: false, error: '再ログインが必要です' }; renderPatient(); reauth(); return; }
+    if (r.status === 403) { showDenied(); return; }
     const d = await r.json().catch(() => ({}));
     if (!r.ok) pt = { key, ok: false, error: d.error || `確認エラー ${r.status}` };
     else if (d.found) pt = { key, ok: true, info: d };
@@ -546,4 +524,30 @@ function renderPatient() {
 function updateExecEnabled() {
   const ready = pt.ok && pt.key === ptKey() && !conflict && !registering;
   el.execBtn.disabled = !ready;
+}
+
+// 認証設定が無い・接続できないときは、アプリを開かずに停止表示
+function showStopped(text) {
+  el.authCard.hidden = false; el.appBody.hidden = true;
+  el.gsiButton.hidden = true; el.requestBox.hidden = true;
+  el.authNote.className = 'auth-note';
+  el.authNote.textContent = text;
+}
+
+// 利用申請フォームの案内（URLが設定されているときだけ表示）
+function showRequestBox() {
+  if (!accessRequestUrl) { el.requestBox.hidden = true; return; }
+  el.requestLink.href = accessRequestUrl;
+  el.requestBox.hidden = false;
+}
+
+// サインインはできたが利用権限がない（グループ未登録など）
+function showDenied() {
+  clearSession('mvk_gtoken'); authToken = '';
+  el.appBody.hidden = true; el.modal.hidden = true;
+  el.authCard.hidden = false; el.gsiButton.hidden = true;
+  el.authNote.className = 'auth-note err';
+  el.authNote.textContent = `${currentUser ? currentUser + ' ' : ''}このアカウントには音声カルテの利用権限がありません。` +
+    (accessRequestUrl ? '利用には申請が必要です。' : 'DXチームに連絡してください。');
+  showRequestBox();
 }

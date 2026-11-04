@@ -51,6 +51,16 @@ gh pr create                        # PRを作成 → 田上がレビュー
 - 診療所の優先順位: ブックマークで開いた院 → 端末の記憶（localStorage） → マスター既定（`user-clinics.json`）
 - 画面の変更はデプロイ後に**Safariの再読み込み**で反映されます（ブックマークの作り直しは不要）
 
+## 認証の安全装置（変更禁止）
+
+- 本番で `GOOGLE_CLIENT_ID` が無いと、全APIが停止します（誰でも使える状態にはならない）
+- `ALLOWED_HD` と `ALLOWED_EMAILS` の両方が無いと、ログインをすべて拒否します
+- 認証なしで動くのは `MOCK=1` か `ALLOW_OPEN=1`（開発専用）のときだけです。本番に `ALLOW_OPEN` を設定しないこと
+- 共有トークン（APP_TOKEN）方式は廃止しました。復活させないこと
+- 本番の前段には **IAP**（Identity-Aware Proxy）があり、Googleグループ `voice-karte-users@yamato-clinic.org` のメンバーしか画面に到達できません。アプリ内のGoogleサインインと二重の防御です
+- アプリのログイントークンは **`X-App-Auth` ヘッダー**で送ります。`Authorization` ヘッダーはIAPが使うため、画面側から `Authorization` を送るように戻さないこと（IAPに弾かれて全APIが止まります）
+- `audit ` で始まるログ行は監査用です。形式を変えたり、氏名・本文などを追加したりしないこと
+
 ## やってはいけないこと
 
 - `clinics.json` / `user-clinics.json` / `.env` を**コミットしない**（`.gitignore` 済み。サンプルは `*.example.json`）
